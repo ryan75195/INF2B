@@ -1,0 +1,300 @@
+#
+# Version 0.9  (HS 09/03/2020)
+#
+import numpy as np
+import scipy.io as sp
+# import helperFunctions as hf
+# import Testing
+
+
+#  loads the respective datasets, labels and classes
+x = np.array(sp.loadmat('dset.mat')['X'])
+y = np.array(sp.loadmat('dset.mat')['Y_species'])
+labels = np.array(sp.loadmat('dset.mat')['list_species'])
+
+
+
+import numpy as np
+import scipy.io as sp
+
+# returns a partition map of the dataset, breaking it into k folds.
+def partition_map(dataset,folds):
+    Mc = np.ceil(len(dataset)/folds)
+    newDataset = []
+    partition = []
+    counter = 0
+    pnum = 0
+    Pmap = []
+    for i in dataset:
+         if np.array_equal(i, dataset[-1]):
+             partition.append(i)
+             Pmap.append(pnum)
+             newDataset.append(partition)
+
+         elif counter == Mc:
+             newDataset.append(partition)
+             counter = 0
+             partition = []
+             pnum += 1
+
+             partition.append(i)
+             Pmap.append(pnum)
+             counter += 1
+         else:
+             partition.append(i)
+             Pmap.append(pnum)
+             counter += 1
+    return Pmap
+
+
+def testData(x, y, PartitionMap, Partition):
+    test_indices = []
+    for i in range(len(PartitionMap)):
+        if PartitionMap[i] == Partition:
+            test_indices.append(i)
+    return test_indices
+
+def trainData(x, testData):
+    train_indices = []
+    for i in range(len(x)):
+        if i not in testData:
+            train_indices.append(i)
+    return train_indices
+
+#gets the full covariance matrix of a dataset.
+def covMatrix(data):
+    return np.cov(data)
+
+#regularizes a covariance matrix with a given epsilon.
+def regularise(covariance_matrix, epsilon):
+    regularized = covariance_matrix
+    for i in range(len(covariance_matrix[0])):
+                regularized[i][i] = regularized[i][i] + epsilon
+    return regularized
+
+
+#returns the shared covariance matrix across all classes.
+def sharedCov(set_matrices):
+    dimensions = len(set_matrices[0])
+    cov = np.zeros([dimensions,dimensions])
+    for matrix in set_matrices:
+        cov = np.add(cov,matrix)
+    return cov * 1/len(set_matrices)
+
+
+#takes in the dataset of samples and sorts them by class.
+def groupData(X,Y, classes_count):
+    sorted = []
+    currentClass = []
+    for species in range(classes_count):
+        for sample in range(len(Y)):
+            if Y[sample] == species:
+                currentClass.append(X[sample])
+        sorted.append(currentClass)
+        currentClass = []
+    return sorted
+
+
+#gets full or diagonal covariance matrix depending on covKind.
+def getCovMatrix(CovKind, cls):
+        matrix = []
+        if CovKind == 1:
+            matrix = covMatrix(cls)
+        if CovKind == 2:
+            diag = np.diag(covMatrix(cls),0)
+            dimensions = len(diag)
+            matrix = np.zeros([dimensions,dimensions])
+            for i in range(dimensions):
+                matrix[i][i] = diag[i]
+
+        return matrix
+
+
+# gets all class covariance matrices for a given training set.
+def get_all_covariance_matrices(CovKind, epsilon, train_x, train_y):
+    class_count = np.max(train_y)
+    dimensions = len(train_x[0])
+    classes = groupData(train_x,train_y, class_count)
+    matrices = []
+
+    getCov = CovKind
+
+    if getCov == 3:
+        CovKind = 1
+
+    for i in range(class_count):
+        if np.shape(classes[i])[0] ==  0:
+            matrix = np.zeros([dimensions,dimensions])
+        else:
+            matrix = getCovMatrix(CovKind, np.transpose(classes[i]))
+        matrices.append(matrix)
+
+    if getCov == 3:
+        shared = sharedCov(matrices)
+        matrices = []
+        for i in range(class_count):
+            matrices.append(shared)
+
+    for matrix in matrices:
+        matrices[i] = regularise(matrix,epsilon)
+
+    return matrices
+
+
+# gets the mean vector for a given class.
+def MeanVector(cls, length):
+    mV = []
+    if len(cls) == 0:
+        mV = np.zeros(length)
+    else:
+        for i in np.transpose(cls):
+            val = np.mean(i)
+            mV.append(val)
+    return mV
+
+# gets all mean vectors for a given training set.
+def get_all_mean_vectors(train_x,train_y):
+
+    class_count = np.max(train_y)
+    classes = groupData(train_x,train_y, class_count)
+    Vectors = []
+    for i in range(class_count):
+        Vectors.append(MeanVector(classes[i], len(train_x[0])))
+    return Vectors
+
+# splits the dataset into k-partitions and returns a list of training/testing pairs for each fold
+def k_fold(dataset, labels, folds):
+    PartitionMap = partition_map(dataset,folds)
+    kFold = []
+    for i in range(folds):
+        test = testData(dataset, labels, PartitionMap, i)
+        kFold.append([test,trainData(dataset,test)])
+    return kFold
+
+
+# returns a list of labled training data for a given fold
+def get_train(fold, total_folds):
+    training_indices = []
+    for i in k_fold(x,y,total_folds)[fold][1]:
+        training_indices.append(i)
+    return training_indices
+
+# returns a list of labled test data for a given fold
+def get_test(fold, total_folds):
+    testing_indices = []
+    for i in k_fold(x,y,total_folds)[fold][0]:
+        testing_indices.append(i)
+    return testing_indices
+
+
+# fits a sample to a given pdf with custom covariance matrix and mean vector paramaters
+def pdf(cov, mean, test_x):
+    xminusmean = np.transpose(np.transpose(test_x) - mean)
+    inv = np.linalg.inv(cov)
+    d = len(test_x)
+    num = np.exp(-0.5 * np.transpose(xminusmean).dot(inv).dot((xminusmean)))
+    denom = (2 * np.pi)**d/2 * np.sqrt(np.linalg.det(cov))
+    return num/denom
+
+
+# calculates the prior probabilities for each class in the dataset
+def priors():
+    priors = []
+    for i in groupData(x,y,len(labels)):
+        priors.append(float(len(i))/float(len(x)))
+    return priors
+
+# performs a prediction for given sample by fitting the pdf for each class to the data and returning the class which returns the highest posterior probability
+def predict_sample(sample, means, covs, priors):
+    posteriors = []
+    for i in range(len(priors)):
+        prior = np.log(priors[i])
+        cond = np.sum(np.log(pdf(covs[i],means[i],sample)))
+        posterior = prior + cond
+        posteriors.append(posterior)
+    return np.argmax(posteriors)
+
+
+
+# returns the success rate for a prediction relative to the true class of the data
+def success_rate(prediction, actual):
+    successes = 0
+    for i in range(len(prediction)):
+        if prediction[i] == actual[i]:
+            successes += 1
+    return successes / len(actual) * 100
+
+# performs classification on a dataset with a specified covariance matrix type(covKind) and a given epsilon to regularise the matrix
+def classifier(test_x, mean_vectors, covariance_matrices):
+    p = priors()
+    return [predict_sample(x,mean_vectors,covariance_matrices,p) for x in test_x]
+
+
+# returns the accuracy of the model along with the best fold and type of covariance matrix used.
+def getModelAccuracy(confusion_matrix, sample_size):
+    correct = 0
+    for i in range(len(confusion_matrix)):
+        correct += confusion_matrix[i][i]
+    percent = int(correct/sample_size * 100)
+    return percent
+
+# calculates a confusion matrix for a given experiment
+def confusion_matrix(Prediction, Actual, class_count):
+    matrix = np.zeros([class_count,class_count])
+    pred = Prediction
+    for i in range(len(pred)):
+            matrix[pred[i] - 1][Actual[i] - 1] += 1
+    return matrix
+
+def task1_mgc_cv(X,Y,CovKind,epsilon,Kfolds):
+    all_folds = k_fold(X,Y,Kfolds)
+    class_count = max(Y)[0]
+    accuracy = []
+    all_CMs = []
+    for fold in range(Kfolds):
+
+            training_indices = get_train(fold,Kfolds)
+
+            train_x = []
+            train_y = []
+
+            test_x = []
+            test_y = []
+
+            for i in range(len(X)):
+                if i in training_indices:
+                    train_x.append(X[i])
+                    train_y.append(Y[i])
+                else:
+                    test_x.append(X[i])
+                    test_y.append(Y[i])
+
+            ms_filename = "t1 mgc {}cv{} Ms.mat".format(Kfolds,fold)
+            Ms = get_all_mean_vectors(train_x,train_y)
+            sp.savemat(ms_filename, mdict={'Ms': Ms})
+
+            Covs_filename = "t1 mgc {}cv{} ck{} Covs.mat".format(Kfolds,fold,CovKind)
+            Covs = get_all_covariance_matrices(CovKind,epsilon,train_x,train_y)
+            sp.savemat(Covs_filename, mdict={'Covs': Covs})
+
+            CM_filename = "t1 mgc {}cv{} ck{} CM.mat".format(Kfolds,fold,CovKind)
+            prediction = classifier(test_x, Ms, Covs)
+            CM = confusion_matrix(prediction, test_y, class_count)
+            sp.savemat(CM_filename, mdict={'CM': CM})
+
+            all_CMs.append(CM)
+            accuracy.append(getModelAccuracy(CM,len(all_folds[0][0])))
+
+    FCM = np.zeros([class_count,class_count])
+    for i in all_CMs:
+        FCM = np.add(FCM, i)
+    FCM = (FCM / (len(y)))
+
+    sp.savemat('t1 mgc {}cv{} ck{} CM.mat'.format(Kfolds,Kfolds+1,CovKind), mdict={'CM': CM})
+
+
+    accuracy = 0
+    for i in range(len(FCM)):
+        accuracy += FCM[i][i]
+
+    return accuracy
